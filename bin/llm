@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+Usage: llm [--stream | --batch | --ensure-daemon | --stop-daemon] [options] [prompt ...]
+
+  -m, --model NAME              LLM_MODEL_NAME (default: qwen3.5-4bunc)
+  --system TEXT                 LLM_SYSTEM
+  --max-tokens N                LLM_MAX_TOKENS (default: 4096)
+  --temperature N               LLM_TEMPERATURE (default: 0.8)
+  --stop-sequence TEXT          LLM_STOP_SEQUENCE (one literal stop string)
+  --max-thinking-tokens N       LLM_MAX_THINKING_TOKENS (default: 1024; -1 or >= 0)
+  --file PATH                   Repeatable; overrides LLM_FILES (JSON array)
+  --schema PATH                 LLM_SCHEMA (JSON Schema written in YAML)
+  --socket PATH                 SOCK
+  --parallel N                  LLM_PARALLEL (batch concurrency)
+  --ensure-daemon                Start/reuse the server without generating
+  --stop-daemon                  Stop the tracked server without generating
+  --help
+
+Flags override environment variables. Without a prompt, read stdin.
+Batch mode takes separate prompt arguments or one prompt per stdin line.
+The router starts automatically if the socket is not healthy; configure XDG_CONFIG_HOME/llm/models.ini.
+EOF
+}
+
+system="${LLM_SYSTEM:-}"
+max_tokens="${LLM_MAX_TOKENS:-4096}"
+temperature="${LLM_TEMPERATURE:-0.8}"
+stop_sequence="${LLM_STOP_SEQUENCE:-}"
+thinking="${LLM_MAX_THINKING_TOKENS:-1024}"
+files="${LLM_FILES:-[]}"
+schema="${LLM_SCHEMA:-}"
+mode=call
+file_flags=false
+prompts=()
+while (($#)); do
+	case "$1" in
+	--help | -h)
+		usage
+		exit 0
+		;;
+	--stream | --batch | --ensure-daemon | --stop-daemon)
+		if [[ "$mode" != call ]]; then
+			printf 'Choose only one of --stream, --batch, --ensure-daemon, and --stop-daemon\n' >&2
+			exit 2
+		fi
+		mode="${1#--}"
+		shift
+		;;
+	-m | --model | --system | --max-tokens | --temperature | --stop-sequence | --max-thinking-tokens | --file | --schema | --socket | --parallel)
+		if (($# < 2)); then
+			printf 'Missing value for %s\n' "$1" >&2
+			exit 2
+		fi
+		case "$1" in
+		-m | --model)
+			if [[ "$2" != *[![:space:]]* ]]; then
+				printf 'model must be a nonempty name\n' >&2
+				exit 2
+			fi
+			export LLM_MODEL_NAME="$2"
+			;;
+		--system) system="$2" ;;
+		--max-tokens) max_tokens="$2" ;;
+		--temperature) temperature="$2" ;;
+		--stop-sequence) stop_sequence="$2" ;;
+		--max-thinking-tokens) thinking="$2" ;;
+		--schema) schema="$2" ;;
+		--socket) export SOCK="$2" ;;
+		--parallel) export LLM_PARALLEL="$2" ;;
+		--file)
+			if [[ "$file_flags" == false ]]; then
+				files='[]'
+				file_flags=true
+			fi
+			files=$(jq -nc --argjson files "$files" --arg path "$2" '$files + [$path]')
+			;;
+		esac
+		shift 2
+		;;
+	--)
+		shift
+		prompts+=("$@")
+		break
+		;;
+	-*)
+		printf 'Unknown option: %s\n' "$1" >&2
+		exit 2
+		;;
+	*)
+		prompts+=("$1")
+		shift
+		;;
+	esac
+done
+
+for dependency in curl jq file base64 realpath flock; do
+	if ! command -v "$dependency" >/dev/null 2>&1; then
+		printf 'Required command not found: %s\n' "$dependency" >&2
+		exit 1
+	fi
+done
+
+script_path=$(realpath -- "${BASH_SOURCE[0]}")
+prefix=$(dirname -- "$(dirname -- "$script_path")")
+if [[ -f "$prefix/lib/client.sh" ]]; then
+	lib_dir="$prefix/lib"
+else
+	lib_dir="$prefix/share/llm/lib"
+fi
+source "$lib_dir/client.sh"
+source "$lib_dir/daemon.sh"
+
+if [[ "$mode" == ensure-daemon || "$mode" == stop-daemon ]]; then
+	if ((${#prompts[@]})); then
+		printf '%s\n' "--$mode does not accept prompts" >&2
+		exit 2
+	fi
+	if [[ "$mode" == stop-daemon ]]; then
+		stop_llm_daemon
+	else
+		get_llm_daemon
+	fi
+	exit 0
+fi
+
+options=("$system" "$max_tokens" "$temperature" "$stop_sequence" "$thinking" "$files" "$schema")
+if [[ "$mode" == batch ]]; then
+	export LLM_PARALLEL="${LLM_PARALLEL:-1}"
+	_llm_payload "." "${options[@]}" >/dev/null
+	get_llm_daemon
+	run_batch "${options[@]}" "${prompts[@]}"
+else
+	if ((${#prompts[@]})); then
+		prompt="${prompts[*]}"
+	else
+		prompt=$(cat)
+	fi
+	if [[ -z "$prompt" ]]; then
+		printf 'A nonempty prompt is required\n' >&2
+		exit 2
+	fi
+	_llm_payload "$prompt" "${options[@]}" >/dev/null
+	get_llm_daemon
+	if [[ "$mode" == stream ]]; then
+		stream_one "$prompt" "${options[@]}"
+	else
+		call_one "$prompt" "${options[@]}"
+	fi
+fi

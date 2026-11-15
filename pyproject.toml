@@ -1,0 +1,27 @@
+[project]
+name = "llm"
+version = "0.1.0"
+description = "High-speed unified LLM server, CLI, and library"
+readme = "README.md"
+authors = [{ name = "Adrien Ventugol", email = "ventugol.adrien@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.162.5",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.3",
+    "pyyaml>=6.0",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+script-files = ["bin/llm"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/llm/lib" = ["lib/daemon.sh", "lib/client.sh", "lib/schema.py"]

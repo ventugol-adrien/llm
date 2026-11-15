@@ -1,0 +1,6 @@
+*.pyc
+**/*.config
+.venv
+build
+dist
+src/llm.egg-info
