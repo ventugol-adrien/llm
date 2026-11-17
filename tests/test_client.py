@@ -519,7 +519,7 @@ class ClientTests(unittest.TestCase):
         override.write_text(self.presets.read_text())
         launcher = self.directory / "capture-options"
         launcher.write_text(
-            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >"$XDG_RUNTIME_DIR/server-args"\nexit 1\n'
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >"$XDG_RUNTIME_DIR/server-args"\numask >"$XDG_RUNTIME_DIR/server-umask"\nexit 1\n'
         )
         launcher.chmod(0o700)
         result = self.cli("--ensure-daemon", env={
@@ -527,13 +527,16 @@ class ClientTests(unittest.TestCase):
             "LLM_SERVER_EXEC": str(launcher), "LLM_MODELS_PRESET": str(override),
             "LLM_MODELS_MAX": "2", "LLM_CTX_SIZE": "8192",
             "LLM_PARALLEL": "3", "LLM_BATCH_SIZE": "256", "LLM_IDLE_SLEEP": "120",
+            "LLM_SPEC_DRAFT_N_MAX": "7", "LLM_SOCKET_UMASK": "0007",
         })
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.directory / "server-umask").read_text().strip(), "0007")
         arguments = (self.directory / "server-args").read_text().splitlines()
         for flag, value in (
             ("--models-preset", str(override)), ("--models-max", "2"),
             ("--ctx-size", "8192"), ("--parallel", "3"), ("--threads-http", "6"),
             ("--batch-size", "256"), ("--ubatch-size", "256"), ("--sleep-idle-seconds", "120"),
+            ("--spec-draft-n-max", "7"),
         ):
             self.assertEqual(arguments[arguments.index(flag) + 1], value)
         for maximum in ("-1", "no"):
@@ -542,6 +545,20 @@ class ClientTests(unittest.TestCase):
                 "LLM_SERVER_EXEC": "/bin/false", "LLM_MODELS_MAX": maximum,
             })
             self.assertIn("LLM_MODELS_MAX", result.stderr)
+            self.assertNotIn("[llm] starting:", result.stderr)
+        for draft_max in ("0", "-1", "no"):
+            result = self.cli("--ensure-daemon", env={
+                "SOCK": str(self.directory / "missing.sock"),
+                "LLM_SERVER_EXEC": "/bin/false", "LLM_SPEC_DRAFT_N_MAX": draft_max,
+            })
+            self.assertIn("LLM_SPEC_DRAFT_N_MAX", result.stderr)
+            self.assertNotIn("[llm] starting:", result.stderr)
+        for socket_umask in ("777", "0008", "abcd"):
+            result = self.cli("--ensure-daemon", env={
+                "SOCK": str(self.directory / "missing.sock"),
+                "LLM_SERVER_EXEC": "/bin/false", "LLM_SOCKET_UMASK": socket_umask,
+            })
+            self.assertIn("LLM_SOCKET_UMASK", result.stderr)
             self.assertNotIn("[llm] starting:", result.stderr)
         for variable in ("LLM_MODEL", "LLM_MMPROJ"):
             result = self.cli("--ensure-daemon", env={

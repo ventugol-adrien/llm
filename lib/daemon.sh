@@ -65,6 +65,14 @@ get_llm_daemon() {
 			_llm_daemon_status failed "LLM_PARALLEL must be a positive integer"
 			exit 1
 		fi
+		if [[ -n "${LLM_SPEC_DRAFT_N_MAX:-}" && ! "$LLM_SPEC_DRAFT_N_MAX" =~ ^[1-9][0-9]*$ ]]; then
+			_llm_daemon_status failed "LLM_SPEC_DRAFT_N_MAX must be a positive integer"
+			exit 1
+		fi
+		if [[ -n "${LLM_SOCKET_UMASK:-}" && ! "$LLM_SOCKET_UMASK" =~ ^[0-7]{4}$ ]]; then
+			_llm_daemon_status failed "LLM_SOCKET_UMASK must be four octal digits (for example, 0007)"
+			exit 1
+		fi
 		rm -f -- "$SOCK" || {
 			_llm_daemon_status failed "could not remove stale socket at $SOCK"
 			exit 1
@@ -77,11 +85,18 @@ get_llm_daemon() {
 		if [[ -n "${LLM_CTX_SIZE:-}" ]]; then server_args+=(--ctx-size "$LLM_CTX_SIZE"); fi
 		if [[ -n "${LLM_BATCH_SIZE:-}" ]]; then server_args+=(--batch-size "$LLM_BATCH_SIZE" --ubatch-size "$LLM_BATCH_SIZE"); fi
 		if [[ -n "${LLM_IDLE_SLEEP:-}" ]]; then server_args+=(--sleep-idle-seconds "$LLM_IDLE_SLEEP"); fi
+		if [[ -n "${LLM_SPEC_DRAFT_N_MAX:-}" ]]; then server_args+=(--spec-draft-n-max "$LLM_SPEC_DRAFT_N_MAX"); fi
 
 		_llm_daemon_status starting "router using $LLM_MODELS_PRESET"
+		local previous_umask=""
+		if [[ -n "${LLM_SOCKET_UMASK:-}" ]]; then
+			previous_umask=$(umask)
+			umask "$LLM_SOCKET_UMASK"
+		fi
 		nohup "$LLM_SERVER_EXEC" "${server_args[@]}" \
 			9>&- >"$LOG_FILE" 2>&1 </dev/null &
 		local pid=$!
+		if [[ -n "$previous_umask" ]]; then umask "$previous_umask"; fi
 		if ! printf '%s\n' "$pid" >"$PID_FILE"; then
 			_llm_daemon_status failed "could not record server PID in $PID_FILE"
 			kill "$pid"

@@ -147,7 +147,7 @@ ln -s /home/adrien/dev/packages/llm/.config/llm "${XDG_CONFIG_HOME:-$HOME/.confi
 
 If the destination already exists, merge it rather than overwriting it. The
 daemon reads `${XDG_CONFIG_HOME:-$HOME/.config}/llm/models.ini`;
-`LLM_MODELS_PRESET` overrides that path. The example presets reference four
+`LLM_MODELS_PRESET` overrides that path. The example presets reference five
 local models with absolute paths; update those paths for another machine. Each
 named section is the model name clients send in the `model` request field. It
 contains the model's GGUF and, for multimodal models, its `mmproj` file. `[*]`
@@ -169,11 +169,40 @@ Lifecycle transitions are reported on stderr with a `[llm]` prefix: `starting`, 
 
 The supplied presets use `parallel = 1`, `ctx-size = 32768`, batch and ubatch
 sizes of 512, and `sleep-idle-seconds = 960`. Optional `LLM_PARALLEL`,
-`LLM_CTX_SIZE`, `LLM_BATCH_SIZE`, and `LLM_IDLE_SLEEP` environment overrides
-are passed as server arguments, taking precedence over presets. These affect
-newly started routers, not an existing one. `--parallel` also sets batch
-concurrency (default 1 for the CLI); when sourcing only the client library,
-batch concurrency defaults to 4.
+`LLM_CTX_SIZE`, `LLM_BATCH_SIZE`, `LLM_IDLE_SLEEP`, and
+`LLM_SPEC_DRAFT_N_MAX` environment overrides are passed as server arguments,
+taking precedence over presets. These affect newly started routers, not an
+existing one. `LLM_SOCKET_UMASK` optionally sets the server process umask when
+creating the Unix socket; it must be four octal digits. `--parallel` also sets
+batch concurrency (default 1 for the CLI); when sourcing only the client
+library, batch concurrency defaults to 4.
+
+To share the Unix socket with a reverse proxy in another container, keep the
+default private runtime directory for the PID, lock, and log files, but place
+the socket in a dedicated group-shared directory:
+
+```sh
+sudo groupadd --system llm-proxy
+sudo install -d -o "$USER" -g llm-proxy -m 2770 /run/llm-proxy
+SOCK=/run/llm-proxy/llama-shared.sock LLM_SOCKET_UMASK=0007 \
+  ./bin/llm --ensure-daemon
+```
+
+Bind-mount `/run/llm-proxy` into the proxy container at `/host-sockets`, and
+add the directory's numeric group ID as a supplemental group for its Nginx
+worker. The setgid directory makes the socket inherit that group, and umask
+`0007` allows group read/write while denying access to others. Create the
+directory again at boot before starting the daemon because `/run` is
+ephemeral. Check directory traversal and socket permissions with `stat`;
+avoid making the socket world-accessible.
+
+The Qwen3.8 preset uses embedded MTP heads (`spec-type = draft-mtp`) with a
+three-token draft window. The Qwen3.5 27B preset does not enable a separate
+drafter by default: the installed Qwen3.5 4B drafter did not improve speed in
+testing. For another target, set `spec-type = draft-mtp` when the model
+includes MTP heads, or use `spec-type = draft-simple` together with
+`model-draft` for a separate compatible draft model. `LLM_SPEC_DRAFT_N_MAX`
+can override the per-preset draft window for a newly started router.
 
 To migrate an already-running single-model daemon, first install the config symlink above, then run these commands on the server host from this repository:
 
